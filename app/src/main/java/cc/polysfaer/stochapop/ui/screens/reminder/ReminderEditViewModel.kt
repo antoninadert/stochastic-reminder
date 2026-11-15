@@ -9,6 +9,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import cc.polysfaer.stochapop.R
+import cc.polysfaer.stochapop.controller.NotificationChannels
 import cc.polysfaer.stochapop.controller.broadcast.SchedulerRepository
 import cc.polysfaer.stochapop.data.reminder.ReminderScheduleType
 import cc.polysfaer.stochapop.data.reminder.ReminderSettings
@@ -125,7 +126,17 @@ class ReminderEditViewModel(
         )
 
         // We need to change the reminder.id as it is not defined when first creating it.
-        schedulerRepository.scheduleReminderAlarms(reminder.copy(id = reminderId))
+        val savedReminder = reminder.copy(id = reminderId)
+        schedulerRepository.scheduleReminderAlarms(savedReminder)
+
+        if (savedReminder.enabled) {
+            NotificationChannels.getOrCreateChannel(application, savedReminder)
+        } else {
+            NotificationChannels.deleteChannelForReminder(application, reminderId)
+        }
+        if (!isEditMode) {
+            NotificationChannels.deleteChannelForReminder(application, 0)
+        }
     }
 
     suspend fun deleteReminder() {
@@ -135,6 +146,14 @@ class ReminderEditViewModel(
             0,
             uiState.previousNotificationCount
         )
+        NotificationChannels.deleteChannelForReminder(application, reminder.id)
         remindersRepository.deleteReminder(reminder)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        if (!isEditMode) {
+            NotificationChannels.deleteChannelForReminder(application, 0)
+        }
     }
 }

@@ -3,6 +3,7 @@ package cc.polysfaer.stochapop.controller.broadcast
 import android.content.Context
 import android.content.Intent
 import cc.polysfaer.stochapop.MainApplication
+import cc.polysfaer.stochapop.controller.NotificationChannels
 
 class BootReceiver : AsyncBroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -13,7 +14,9 @@ class BootReceiver : AsyncBroadcastReceiver() {
 
             goAsync {
                 val reminders = remindersRepository.getAllReminders()
-                reminders.filter { it.enabled }.forEach {
+                val activeReminders = reminders.filter { it.enabled }
+                NotificationChannels.syncChannels(context, activeReminders)
+                activeReminders.forEach {
                     schedulerRepository.scheduleReminderAlarms(it)
                 }
             }
