@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -18,6 +19,7 @@ import androidx.core.content.ContextCompat
 import cc.polysfaer.stochapop.MainActivity
 import cc.polysfaer.stochapop.R
 import cc.polysfaer.stochapop.data.reminder.Reminder
+import cc.polysfaer.stochapop.data.reminder.ReminderScheduleType
 import cc.polysfaer.stochapop.data.reminder.ReminderSettings
 
 object NotificationChannels {
@@ -31,28 +33,146 @@ object NotificationChannels {
         }
     }
 
+    fun getChannelIdPrefix(reminderId: Int): String {
+        return "reminder_${reminderId}_"
+    }
+
+    fun getChannelId(reminder: Reminder): String {
+        return getChannelId(
+            reminderId = reminder.id,
+            hasSound = reminder.hasSound,
+            hasVibration = reminder.hasVibration,
+            soundUri = reminder.soundUri
+        )
+    }
+
+    fun getChannelId(
+        reminderId: Int,
+        hasSound: Boolean,
+        hasVibration: Boolean,
+        soundUri: Uri? = ReminderSettings.DEFAULT_NOTIFICATION_URI
+    ): String {
+        val soundHash = if (hasSound) {
+            val uri = soundUri ?: ReminderSettings.DEFAULT_NOTIFICATION_URI
+            uri.toString().hashCode().toString()
+        } else {
+            "NOURI"
+        }
+        val vibrationStr = if (hasVibration) "V" else "NV"
+        return "${getChannelIdPrefix(reminderId)}${soundHash}_${vibrationStr}"
+    }
+
+    /**
+     * Create or update the notification channel for a specific reminder.
+     * Ensures channel name matches the reminder title and sound/vibration are in sync.
+     * Also deletes any outdated channels for this reminder (e.g. from prior sound settings).
+     */
+    fun getOrCreateChannel(
+        context: Context,
+        reminder: Reminder
+    ): String {
+        val manager = context.getSystemService(NotificationManager::class.java)
+            ?: return getChannelId(reminder)
+
+        val targetChannelId = getChannelId(reminder)
+        val channelName = reminder.title.trim().ifBlank {
+            context.getString(R.string.edit_reminder_default_title)
+        }
+
+        val existingChannel = manager.getNotificationChannel(targetChannelId)
+        if (existingChannel != null) {
+            if (existingChannel.name != channelName) {
+                existingChannel.name = channelName
+                manager.createNotificationChannel(existingChannel)
+            }
+        } else {
+            val importance = NotificationManager.IMPORTANCE_HIGH
+            val visibility = Notification.VISIBILITY_PUBLIC
+
+            val channel = NotificationChannel(targetChannelId, channelName, importance).apply {
+                lockscreenVisibility = visibility
+                enableVibration(reminder.hasVibration)
+                if (reminder.hasSound) {
+                    val soundUri = reminder.soundUri ?: ReminderSettings.DEFAULT_NOTIFICATION_URI
+                    val audioAttributes = AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .build()
+                    setSound(soundUri, audioAttributes)
+                } else {
+                    setSound(null, null)
+                }
+            }
+            manager.createNotificationChannel(channel)
+        }
+
+        // Clean up any other channels belonging to this reminder (e.g. with older sound/vibration settings)
+        val prefix = getChannelIdPrefix(reminder.id)
+        val channels = manager.notificationChannels ?: emptyList()
+        for (channel in channels) {
+            if (channel.id.startsWith(prefix) && channel.id != targetChannelId) {
+                manager.deleteNotificationChannel(channel.id)
+            }
+        }
+
+        return targetChannelId
+    }
+
+    /**
+     * Delete any notification channels associated with a specific reminder.
+     */
+    fun deleteChannelForReminder(context: Context, reminderId: Int) {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        val prefix = getChannelIdPrefix(reminderId)
+        val channels = manager.notificationChannels ?: return
+        for (channel in channels) {
+            if (channel.id.startsWith(prefix)) {
+                manager.deleteNotificationChannel(channel.id)
+            }
+        }
+    }
+
+    /**
+     * Synchronize all notification channels with the list of active reminders.
+     * Creates/updates channels for active reminders with their current titles and sounds,
+     * and deletes any notification channels that do not correspond to an active reminder.
+     */
+    fun syncChannels(context: Context, activeReminders: List<Reminder>) {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+
+        // 1. Ensure channels for all active reminders and collect active channel IDs
+        val activeChannelIds = mutableSetOf<String>()
+        for (reminder in activeReminders) {
+            val channelId = getOrCreateChannel(context, reminder)
+            activeChannelIds.add(channelId)
+        }
+
+        // 2. Delete any existing channels not in activeChannelIds
+        val existingChannels = manager.notificationChannels ?: return
+        for (channel in existingChannels) {
+            if (channel.id != NotificationChannel.DEFAULT_CHANNEL_ID && channel.id !in activeChannelIds) {
+                manager.deleteNotificationChannel(channel.id)
+            }
+        }
+    }
+
+    @Deprecated("Use getChannelId(reminder) instead")
     fun getChannelId(
         isUrgent: Boolean,
         isPublic: Boolean,
         hasSound: Boolean,
         hasVibration: Boolean,
-        soundUri: Uri? = ReminderSettings.DEFAULT_NOTIFICATION_URI //
+        soundUri: Uri? = ReminderSettings.DEFAULT_NOTIFICATION_URI
     ): String {
-        val importanceStr = if (isUrgent) "URGENT" else "DEFAULT"
-        val visibilityStr = if (isPublic) "PUBLIC" else "PRIVATE"
-        val soundStr      = if (hasSound) "S" else "NS"
-        val vibrationStr  = if (hasVibration) "V" else "NV"
-
-        val soundHash = if (hasSound && (soundUri != null)) {
-            soundUri.toString().hashCode().toString()
-        } else {
-            "NOURI"
-        }
-
-        val id = "${importanceStr}_${visibilityStr}_${soundStr}_${vibrationStr}_${soundHash}"
-        return id
+        return getChannelId(
+            reminderId = 0,
+            hasSound = hasSound,
+            hasVibration = hasVibration,
+            soundUri = soundUri
+        )
     }
 
+    @Deprecated("Use getOrCreateChannel(context, reminder) instead")
     fun createChannel(
         context: Context,
         isUrgent: Boolean,
@@ -61,32 +181,21 @@ object NotificationChannels {
         hasVibration: Boolean,
         soundUri: Uri?
     ): String {
-        val manager = context.getSystemService(NotificationManager::class.java)
-
-        val channelId = getChannelId(
-            isUrgent,
-            isPublic,
-            hasSound,
-            hasVibration,
-            soundUri
+        val dummy = Reminder(
+            id = 0,
+            title = "",
+            message = "",
+            enabled = true,
+            hasSound = hasSound,
+            hasVibration = hasVibration,
+            soundUri = soundUri,
+            scheduleType = ReminderScheduleType.FIXED,
+            notificationCount = 1,
+            startTime = java.time.LocalTime.MIN,
+            endTime = java.time.LocalTime.MAX,
+            selectedDays = java.time.DayOfWeek.entries.toSet()
         )
-
-        val importance = if (isUrgent) NotificationManager.IMPORTANCE_HIGH else NotificationManager.IMPORTANCE_DEFAULT
-        val visibility = if (isPublic) Notification.VISIBILITY_PUBLIC else Notification.VISIBILITY_PRIVATE
-
-        val channel = NotificationChannel(channelId, "Channel $channelId", importance).apply {
-            lockscreenVisibility = visibility
-            enableVibration(hasVibration)
-            if (hasSound) {
-                setSound(soundUri, null)
-            } else {
-                setSound(null, null)
-            }
-        }
-
-        manager.createNotificationChannel(channel)
-
-        return channelId
+        return getOrCreateChannel(context, dummy)
     }
 }
 
@@ -129,12 +238,14 @@ fun sendNotification(
         .setCategory(NotificationCompat.CATEGORY_ALARM)
         .setAutoCancel(true)
         .setGroup(groupKey)
+        .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
         .setContentIntent(if (backToActivityOnClick) pendingIntent else null)
 
     val summaryNotification = NotificationCompat.Builder(context, channelId)
         .setSmallIcon(R.drawable.ic_reminder_notification)
         .setGroup(groupKey)
         .setGroupSummary(true)
+        .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
         .setAutoCancel(true)
         .setContentIntent(if (backToActivityOnClick) pendingIntent else null)
         .build()
@@ -154,15 +265,9 @@ fun sendNotification(
 ) {
     val summaryNotificationId = reminder.id
 
-    /* Create the specific notification channel as needed. */
-    // TODO: probably overkill, and don't even garbage collect unused channels.
-    val channelId = NotificationChannels.createChannel(
+    val channelId = NotificationChannels.getOrCreateChannel(
         context = context,
-        isUrgent = true, //
-        isPublic = true, //
-        hasSound = reminder.hasSound,
-        hasVibration = reminder.hasVibration,
-        soundUri = reminder.soundUri
+        reminder = reminder
     )
 
     sendNotification(

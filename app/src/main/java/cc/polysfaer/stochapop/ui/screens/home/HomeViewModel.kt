@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.core.content.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import cc.polysfaer.stochapop.controller.NotificationChannels
 import cc.polysfaer.stochapop.controller.broadcast.SchedulerRepository
 import cc.polysfaer.stochapop.data.AppSettingsName
 import cc.polysfaer.stochapop.data.DataSource
@@ -38,6 +39,11 @@ class HomeViewModel(
 
     init {
         initializeOnFirstRun()
+        viewModelScope.launch {
+            remindersRepository.getAllRemindersStream().collect { reminders ->
+                NotificationChannels.syncChannels(application, reminders.filter { it.enabled })
+            }
+        }
     }
 
     private fun initializeOnFirstRun() {
@@ -48,6 +54,7 @@ class HomeViewModel(
         if (isFirstRun) {
             viewModelScope.launch {
                 remindersRepository.insertReminders(reminderList)
+                NotificationChannels.syncChannels(application, reminderList.filter { it.enabled })
                 reminderList.filter { it.enabled }.forEach {
                     schedulerRepository.scheduleReminderAlarms(it)
                 }
@@ -61,8 +68,10 @@ class HomeViewModel(
 
         viewModelScope.launch {
             if (newReminder.enabled) {
+                NotificationChannels.getOrCreateChannel(application, newReminder)
                 schedulerRepository.scheduleReminderAlarms(newReminder)
             } else {
+                NotificationChannels.deleteChannelForReminder(application, newReminder.id)
                 schedulerRepository.cancelNotificationAlarms(
                     newReminder.id,
                     0,
@@ -76,6 +85,7 @@ class HomeViewModel(
 
     fun deleteReminder(reminder: Reminder) {
         viewModelScope.launch {
+            NotificationChannels.deleteChannelForReminder(application, reminder.id)
             schedulerRepository.cancelNotificationAlarms(
                 reminder.id,
                 0,
